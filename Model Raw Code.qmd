@@ -1,0 +1,849 @@
+---
+title: "Individual Project 1"
+author: "Tina Yi"
+format: html
+editor: visual
+---
+
+# **AIRBNB PRICING IN ASHEVILLE, NC**
+
+Airbnb wants to help new hosts set prices for their Airbnb listings in Asheville, NC. They have hired your data science consulting company to build a model to generate prices based on a variety of factors.
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE, fig.show='hide'}
+library(readr)
+library(geosphere) 
+library(stringr)
+library(dplyr)
+library(tidyverse)
+library(corrplot)
+library(car)
+library(ggplot2)
+library(cowplot)
+library(caret)
+library("SmartEDA")
+airbnb <- read_csv("listings.csv")
+View(airbnb)
+glimpse(airbnb)
+# Overview of the data - Type = 1
+ExpData(data=airbnb,type=1)
+# Structure of the data - Type = 2
+ExpData(data=airbnb,type=2)
+```
+
+# Cleaning Data
+
+## Room Types (factor)
+
+Observe unique room types
+
+```{r}
+# return counts of each unique airbnb room types
+summary(airbnb$room_type)
+roomtype_count <- airbnb %>%
+  group_by(room_type) %>%
+  summarise(count = n())
+
+roomtype_count
+
+unique_room_types_count <- airbnb %>%
+  summarise(n_distinct(room_type))
+
+unique_room_types_count
+
+#convert room types to categorical variables 
+airbnb$room_type_fac <- factor(airbnb$room_type)
+summary(airbnb$room_type_fac)
+```
+
+## Bedroom (Drop NA)
+
+clean the bedrooms variables
+
+```{r}
+bedroom_count <- airbnb %>%
+  group_by(bedrooms) %>%
+  summarise(count = n())
+
+bedroom_count
+
+airbnb <- airbnb %>%
+  mutate(cleaned_bedrooms = bedrooms) %>%
+  filter(!is.na(cleaned_bedrooms)) 
+
+any(is.na(airbnb$cleaned_bedrooms))
+
+```
+
+## Bathrooms (Convert Data and Drop NA)
+
+extract number of bathrooms and clean it
+
+```{r}
+bathroom_count <- airbnb %>%
+  group_by(bathrooms_text) %>%
+  summarise(count = n())
+
+bathroom_count
+
+summarize(bathroom_count)
+
+#clean the bathroom variables 
+airbnb$bathrooms_text[airbnb$bathrooms_text=="Shared half-bath"] <- "0.5 bath"
+airbnb$bathrooms_text[airbnb$bathrooms_text=="Half-bath"] <- "0.5 bath"
+unique(airbnb$bathrooms_text)
+
+# Using str_extract to extract the numeric value including decimal from the bathrooms_text column and filter out na columns
+airbnb <- airbnb %>%
+  mutate(bathrooms = as.numeric(str_extract(bathrooms_text, "\\d+\\.?\\d*"))) %>%
+  filter(!is.na(bathrooms)) 
+
+summary(airbnb$bathrooms)
+glimpse(airbnb$bathrooms)
+
+any(is.na(airbnb$bathrooms))
+
+```
+
+## Distance to Dt (Create New Variable)
+
+Create a new variable that gives the distance to downtown. Using the `apply` function, which is a useful function in R to perform an operation on all rows (or columns) of a matrix. Then it uses the `distm()` function in the [geosphere package](https://cran.r-project.org/web/packages/geosphere/) to calculate the distance in meters from a latitude and longitude in downtown Asheville. Finally, it multiplies by the appropriate constant to convert the value to miles.
+
+```{r}
+airbnb$dist_to_dt <- apply(airbnb[,c("longitude","latitude")],1,function(x) distm(
+  c(-82.55481168521978,35.59701329976918),
+  x,fun=distHaversine))*0.00062137
+summary(airbnb$dist_to_dt)
+any(is.na(airbnb$dist_to_dt))
+```
+
+## Price (Drop \$)
+
+Clean the `price` variable (outcome).
+
+```{r}
+# Remove $ and , from the price, then convert to numeric
+airbnb <- airbnb %>%
+  mutate(cleaned_price = as.numeric(gsub("[$,]", "", price)))
+summary(airbnb$cleaned_price)
+any(is.na(airbnb$cleaned_price))
+```
+
+## Out Door Dining (Create New Variable and factor)
+
+(`extra points)` Incorporate amenity features in the model. Create a new column called `out_door_dining` and populate it with **`"yes"`** if **`"Outdoor dining area"`** is present in the **`amenities`** column for a given row and **`"no"`** otherwise.
+
+```{r}
+airbnb <- airbnb %>%
+  mutate(out_door_dining = ifelse(str_detect(amenities, fixed("Outdoor dining area")), "yes", "no"))
+
+airbnb$out_door_dining_fac <- factor(airbnb$out_door_dining,
+                          levels = c("yes", "no"),
+                          labels = c("have outdoor dining", "don't have outdoor dining"))
+
+summary(airbnb$out_door_dining_fac)
+any(is.na(airbnb$out_door_dining))
+```
+
+## Host Acceptance Rate (Drop % and NA)
+
+clean host_acceptance_rate to be numerical variables and clean it.
+
+```{r}
+summary(airbnb$host_acceptance_rate)
+airbnb <- airbnb %>%
+  mutate(clean_host_acceptance_rate = as.numeric(gsub("%", "", host_acceptance_rate))) %>%
+  filter(!is.na(clean_host_acceptance_rate))  
+
+summary(airbnb$clean_host_acceptance_rate)
+any(is.na(airbnb$clean_host_acceptance_rate))
+
+zero_count <- sum(airbnb$clean_host_acceptance_rate == 0)
+print(zero_count)
+
+```
+
+# Glimpse the Post-cleaned and Merged Data's model
+
+Check the post-cleaned and merged data's model
+
+```{r}
+glimpse(airbnb)
+summary(airbnb)
+
+```
+
+Fit the Model
+
+As you fit and assess your model, consider the following elements that we have discussed in class:
+
+-   Is this a prediction or inference problem? Should model interpretability be prioritized in this situation? (prediction, model interpretability not prioritized)
+
+-   Did you include any interaction terms? Why or why not? (ggplot)
+
+-   Look at the diagnostic plots for your model. Determine if you need to transform predictor(s) (linearity) or the outcome variable (equal variance) to improve the model.
+
+-   Evaluate influential points (leverage, cook's distance) and multicollinearity (VIF) and make adjustments accordingly. If you remove any observations, be sure to include this information in your report.
+
+-   Methods: Describe your model assessment and building process. Did you include any interaction terms? Why or why not? Did you transform any variables? If so, why? Provide the model diagnostic plots. Did you exclude any observations? Did you make any adjustments because of multicollinearity? How did you assess your model?
+
+-   Which model metric(s) are appropriate to assess the model? (RMSE)
+
+-   Conclusion: What do you conclude about the validity of this analysis?
+
+# Correlation Plot
+
+Run correlation plot to determine if there's correlations among predictor variables
+
+```{r}
+#Run correlation plot to determine if there's correlations among predictor variables
+corrplot(cor(airbnb[,c("cleaned_bedrooms", "bathrooms", "dist_to_dt", "clean_host_acceptance_rate")]))
+```
+
+Run the main regression model
+
+# Main regression 1 (Cleaned Variables)
+
+```{r}
+main_regression <- lm(cleaned_price ~ room_type_fac + cleaned_bedrooms + bathrooms + dist_to_dt + clean_host_acceptance_rate + out_door_dining_fac, 
+                      data = airbnb)
+
+summary(main_regression)
+
+plot(main_regression)
+
+```
+
+# Multicolinearity(VIF)
+
+Check multicolinearity of the model using vif
+
+Most of the variables have low multicollinearity, with the adjusted GVIF close to 1, suggesting that they are not highly correlated with each other. While the 'cleaned_bedrooms' and 'bathrooms' variables do show moderate multicollinearity, the overall low levels of multicollinearity should not significantly impact the model.
+
+```{r}
+vif(main_regression)
+```
+
+## Room Types Combine Categories (Standard Error Too High)
+
+The standard error of roomtype Hotel and Private Room are too high.
+
+Combine categories for room types
+
+```{r}
+roomtype_count <- airbnb %>%
+  group_by(room_type) %>%
+  summarise(count = n())
+
+roomtype_count
+
+unique(airbnb$room_type)
+
+unique_room_types_count <- airbnb %>%
+  summarise(n_distinct(room_type))
+
+unique_room_types_count
+
+#combine hotel room with private room as one single category "Non Entire home/apt"
+
+airbnb <- airbnb %>%
+  mutate(room_type_clean = case_when(
+    room_type == "Entire home/apt" ~ "Entire home/apt",
+    room_type == "Hotel room" | room_type == "Private room" ~ "Non Entire home/apt",
+    TRUE ~ as.character(room_type) # This line is to avoid any data loss if there are unexpected values in room_type
+  ))
+
+cleaned_roomtype_count <- airbnb %>%
+  group_by(room_type_clean) %>%
+  summarise(count = n())
+
+cleaned_roomtype_count
+
+unique(airbnb$room_type_clean)
+
+unique_cleaned_room_types_count <- airbnb %>%
+  summarise(n_distinct(room_type_clean))
+
+unique_cleaned_room_types_count
+
+#convert cleaned room types to categorical variables 
+airbnb$room_type_clean_fac <- factor(airbnb$room_type_clean)
+summary(airbnb$room_type_clean_fac)
+
+```
+
+## An overview of the 7 variables after cleaning and merging
+
+Outcome variable:
+
+-   Price: Represents the daily cost of Airbnb in local currency.
+
+Predictor variables: 
+
+-   Number of Bedrooms: Specifies the count of bedrooms available in the Airbnb, ranging between 1 to 9. 
+
+-   Number of Bathrooms: Specifies the count of bathrooms, both private and shared, ranging from 0 to 9 (excluding 8, with decimals like 0.5, 1.5, etc., representing additional bathroom counts). 
+
+-   Distance to Downtown: Measures the proximity of the Airbnb location to the city center. 
+
+-   Host Acceptance Rate: Represents the frequency at which hosts accept booking requests, varying between 0% to 100%.
+
+-   Room Type: Distinguishes between entire homes/apartments and non-entire homes/apartments 
+
+-   Outdoor Dining: Indicates the availability of outdoor dining facilities, categorized as available or not available.
+
+# Main Regression 2 (New Room Types)
+
+```{r}
+main_regression2 <- lm(cleaned_price ~ room_type_clean_fac + cleaned_bedrooms + bathrooms + dist_to_dt + clean_host_acceptance_rate + out_door_dining_fac, 
+                      data = airbnb)
+
+summary(main_regression2)
+
+plot(main_regression2)
+```
+
+vif main regression 2.
+
+From these VIF results, it seems like there is some moderate correlation between 'cleaned_bedrooms' and 'bathrooms' with other variables, but they are within generally acceptable levels. The other variables do not seem to have significant multicollinearity problems, as their VIF values are very close to 1.
+
+```{r}
+vif(main_regression2)
+```
+
+Plot ggplot for room_type cateogrical variables
+
+# ggplot for each categorical variables
+
+```{r}
+par(mfrow=c(2,2))
+
+p1<-ggplot(airbnb, aes(x=cleaned_bedrooms, y=cleaned_price, col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="bedrooms",
+       y="price", col="room_type")
+
+p2<-ggplot(airbnb, aes(x=bathrooms, y=cleaned_price, col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="bathrooms",
+       y="price", col="room_type")
+
+p3<-ggplot(airbnb, aes(x=dist_to_dt, y=cleaned_price, col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="distance to downtown",
+       y="price", col="room_type")
+
+p4<-ggplot(airbnb, aes(x=clean_host_acceptance_rate, y=cleaned_price, col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="host acceptance rate",
+       y="price", col="room_type")
+
+# Arrange the plots in a 2x2 grid
+plot_grid(p1, p2, p3, p4, ncol=2)
+
+```
+
+Plot ggplot for out_door_dining_factor
+
+```{r}
+par(mfrow=c(2,2))
+ggplot(airbnb, aes(x=cleaned_bedrooms, y=cleaned_price, col=out_door_dining_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="bedrooms",
+       y="price", col="out_door_dining_fac")
+
+ggplot(airbnb, aes(x=bathrooms, y=cleaned_price, col=out_door_dining_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="bathrooms",
+       y="price", col="out_door_dining_fac")
+
+ggplot(airbnb, aes(x=dist_to_dt, y=cleaned_price, col=out_door_dining_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="distance to downtown",
+       y="price", col="out_door_dining_fac")
+
+ggplot(airbnb, aes(x=clean_host_acceptance_rate, y=cleaned_price, col=out_door_dining_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="host acceptance rate",
+       y="price", col="out_door_dining_fac")
+
+```
+
+From the ggplot, we can see that interaction terms are needed for all of them since the lines are not very parallel
+
+Add interactions term for factored categorical variables
+
+# Main regression 3 (Add Interaction Terms)
+
+```{r}
+main_regression_3 <- lm(cleaned_price~ cleaned_bedrooms*room_type_clean_fac + bathrooms*room_type_clean_fac + dist_to_dt*room_type_clean_fac + clean_host_acceptance_rate*room_type_clean_fac + cleaned_bedrooms*out_door_dining_fac + bathrooms*out_door_dining_fac + dist_to_dt*out_door_dining_fac + clean_host_acceptance_rate*out_door_dining_fac, 
+                      data = airbnb)
+
+# Print the summary of the regression
+summary(main_regression_3)
+
+par(mfrow=c(2,2))
+#plot 
+plot(main_regression_3)
+
+```
+
+It seems like on the residual plot, the pattern is non-linear and the variance of errors seems to distirbute unevenly from left to right. Therefore, the linearity and equal variance of errors need to be adjusted. For linearity, adjust x variables log(x), for equal variance, adjust y variable log(y)
+
+Revise the model with log(y)
+
+```{r}
+#check minimum value of price to make sure it's not 0
+min(airbnb$cleaned_price)
+
+```
+
+# Main Regression 4 (Add Transform y)
+
+```{r}
+main_regression_4 <- lm(log(cleaned_price)~ cleaned_bedrooms*room_type_clean_fac + bathrooms*room_type_clean_fac + dist_to_dt*room_type_clean_fac + clean_host_acceptance_rate*room_type_clean_fac + cleaned_bedrooms*out_door_dining_fac + bathrooms*out_door_dining_fac + dist_to_dt*out_door_dining_fac + clean_host_acceptance_rate*out_door_dining_fac, 
+                      data = airbnb)
+
+# Print the summary of the regression
+summary(main_regression_4)
+
+#plot 
+plot(main_regression_4)
+```
+
+Revise the model with log(x)
+
+## Choose which x to log using ggplot
+
+Since the distance to downtown is the true continous variable here, we want to observe the relationship between distance to downtown and price to see if a log transformation makes sense.
+
+The log (dis_to_downtown) does make a difference and makes it looks better. log it.
+
+```{r}
+ggplot(airbnb, aes(x=dist_to_dt, y=log(cleaned_price), col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="distance to downtown",
+       y="log price", col="room_type_clean_fac")
+
+ggplot(airbnb, aes(x=log(dist_to_dt), y=log(cleaned_price), col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="log distance to downtown",
+       y="log price", col="room_type_clean_fac")
+```
+
+The log(cleaned_bedrooms) doesn't make a difference. Don't log.
+
+```{r}
+ggplot(airbnb, aes(x=cleaned_bedrooms, y=log(cleaned_price), col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="bedrooms",
+       y="log price", col="room_type_clean_fac")
+
+ggplot(airbnb, aes(x=log(cleaned_bedrooms), y=log(cleaned_price), col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="log bedrooms",
+       y="log price", col="room_type_clean_fac")
+```
+
+The log(bathrooms) doesn't make a difference. Don't log.
+
+```{r}
+ggplot(airbnb, aes(x=bathrooms, y=log(cleaned_price), col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="bathrooms",
+       y="log price", col="room_type_clean_fac")
+
+ggplot(airbnb, aes(x=log(bathrooms), y=log(cleaned_price), col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="log bathrooms",
+       y="log price", col="room_type_clean_fac")
+```
+
+The log(cleaned_host_acceptance_rate) doesn't make a difference. Don't log.
+
+```{r}
+ggplot(airbnb, aes(x=clean_host_acceptance_rate, y=log(cleaned_price), col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="host acceptance rate",
+       y="log price", col="room_type_clean_fac")
+
+ggplot(airbnb, aes(x=log(clean_host_acceptance_rate), y=log(cleaned_price), col=room_type_clean_fac))+
+  geom_point()+
+  geom_smooth(method="lm", se=F)+
+  labs(x="log host acceptance rate",
+       y="log price", col="room_type_clean_fac")
+```
+
+It seems like no predictor variables need to be logged except distance to downtown. Distance to downtown doesn't have min value 0 so it's safe to log
+
+```{r}
+min(airbnb$bathrooms)
+min(airbnb$clean_host_acceptance_rate)
+min(airbnb$dist_to_dt)
+min(airbnb$cleaned_bedrooms)
+
+```
+
+# Main Regression 5 (Add Transform x)
+
+```{r}
+main_regression_5 <- lm(log(cleaned_price)~ cleaned_bedrooms*room_type_clean_fac + bathrooms*room_type_clean_fac + log(dist_to_dt)*room_type_clean_fac + clean_host_acceptance_rate*room_type_clean_fac + cleaned_bedrooms*out_door_dining_fac + bathrooms*out_door_dining_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate*out_door_dining_fac, 
+                      data = airbnb)
+
+# Print the summary of the regression
+summary(main_regression_5)
+
+#plot 
+plot(main_regression_5)
+```
+
+Now the linearity and equal variance of errors looks pretty good.
+
+## Remove Influential Points
+
+Start to remove influential points that have high cook's distance, then look at points that have high leverage and high residuals to determine if they are influential points by removing it and observing the p value afterwards.
+
+If a point has high leverage but a small residual, it might not be influential according to Cook's distance. Conversely, a point with high Cook's distance is definitely influential, either due to high leverage, large residuals, or both.
+
+```{r}
+filter_airbnb_cooks <- airbnb %>%
+  filter(!(row.names(airbnb) %in% c(2520, 2105, 1342)))
+```
+
+Run regression using filter_airbnb_cooks to check if there are points with high leverage or high residuals
+
+```{r}
+main_regression_6 <- lm(log(cleaned_price)~ cleaned_bedrooms*room_type_clean_fac + bathrooms*room_type_clean_fac + log(dist_to_dt)*room_type_clean_fac + clean_host_acceptance_rate*room_type_clean_fac + cleaned_bedrooms*out_door_dining_fac + bathrooms*out_door_dining_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate*out_door_dining_fac, 
+                      data = filter_airbnb_cooks)
+
+# Print the summary of the regression
+summary(main_regression_6)
+
+#plot 
+plot(main_regression_6)
+```
+
+Remove points 927 because it has high cooks distance
+
+```{r}
+filter_airbnb_cooks_2 <- filter_airbnb_cooks %>%
+  filter(!(row.names(filter_airbnb_cooks) %in% c(927)))
+```
+
+Run regression using filter_airbnb_cooks2 to check if there are points with high leverage or high residuals
+
+```{r}
+main_regression_7 <- lm(log(cleaned_price)~ cleaned_bedrooms*room_type_clean_fac + bathrooms*room_type_clean_fac + log(dist_to_dt)*room_type_clean_fac + clean_host_acceptance_rate*room_type_clean_fac + cleaned_bedrooms*out_door_dining_fac + bathrooms*out_door_dining_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate*out_door_dining_fac, 
+                      data = filter_airbnb_cooks_2)
+
+# Print the summary of the regression
+summary(main_regression_7)
+
+#plot 
+plot(main_regression_7)
+```
+
+## Remove Points with high residuals or leverage
+
+Remove point 698 because it has very high residuals and leverage.
+
+```{r}
+filter_airbnb_cooks_3 <- filter_airbnb_cooks_2 %>%
+  filter(!(row.names(filter_airbnb_cooks_2) %in% c(698)))
+```
+
+## Determine if it is influential points
+
+Check the p value to determine if it is an influential point.
+
+If the inclusion or exclusion of a high-leverage or high-residual point alters the p-value significantly making a previously insignificant variable significant (or vice versa), then you might consider that point as influential. If the p-value changes but doesn't cross the threshold of significance, the point may not be influential in determining the significance of a variable.
+
+```{r}
+main_regression_8 <- lm(log(cleaned_price)~ cleaned_bedrooms*room_type_clean_fac + bathrooms*room_type_clean_fac + log(dist_to_dt)*room_type_clean_fac + clean_host_acceptance_rate*room_type_clean_fac + cleaned_bedrooms*out_door_dining_fac + bathrooms*out_door_dining_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate*out_door_dining_fac, 
+                      data = filter_airbnb_cooks_3)
+
+# Print the summary of the regression
+summary(main_regression_8)
+
+#plot 
+plot(main_regression_8)
+```
+
+From the results, it looks like p-value does change from insignificant to significant after removing point 698. It is an influential points need to be moved.
+
+Remove point 347 because it has very high residuals and leverage.
+
+```{r}
+filter_airbnb_cooks_4 <- filter_airbnb_cooks_3 %>%
+  filter(!(row.names(filter_airbnb_cooks_3) %in% c(347)))
+```
+
+Determine whether 347 is a influential points.
+
+```{r}
+main_regression_9 <- lm(log(cleaned_price)~ cleaned_bedrooms*room_type_clean_fac + bathrooms*room_type_clean_fac + log(dist_to_dt)*room_type_clean_fac + clean_host_acceptance_rate*room_type_clean_fac + cleaned_bedrooms*out_door_dining_fac + bathrooms*out_door_dining_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate*out_door_dining_fac, 
+                      data = filter_airbnb_cooks_4)
+
+# Print the summary of the regression
+summary(main_regression_9)
+
+#plot 
+plot(main_regression_9)
+```
+
+From the results, it looks like 347 is not influential because it has no impact on the p-value. I think I would stop here and keep 347.
+
+# Main Regression 8 (transfrom y, transform dis_to_dt + add all interaction terms + drop influential points)
+
+I will have my regression model main_regression_8 for cleaned values with all the interaction terms.
+
+```{r}
+main_regression_8 <- lm(log(cleaned_price)~ cleaned_bedrooms*room_type_clean_fac + bathrooms*room_type_clean_fac + log(dist_to_dt)*room_type_clean_fac + clean_host_acceptance_rate*room_type_clean_fac + cleaned_bedrooms*out_door_dining_fac + bathrooms*out_door_dining_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate*out_door_dining_fac, 
+                      data = filter_airbnb_cooks_3)
+
+# Print the summary of the regression
+summary(main_regression_8)
+
+#plot 
+plot(main_regression_8)
+```
+
+# Cross Examination (main regression 8)
+
+Run the cross-examination
+
+-   RMSE 0.3954225. Lower RMSE values indicate better model fit, where predictions are closer to the actual values.
+
+-   R² of approximately 0.5254103 means that about 52.5% of the variance in the target variable is explained by the predictors.
+
+-   MAE 0.3080643. Lower MAE values indicate better model accuracy in terms of absolute error.
+
+```{r}
+# Setting seed for reproducibility
+set.seed(921)
+
+# Setting up 10-fold cross-validation
+train_control <- trainControl(method = "cv", number = 10)
+
+# Building a linear model with interaction terms using the 'caret' package
+mod_full <- train(
+  log(cleaned_price) ~ cleaned_bedrooms * room_type_clean_fac +
+    bathrooms * room_type_clean_fac +
+    log(dist_to_dt) * room_type_clean_fac +
+    clean_host_acceptance_rate * room_type_clean_fac +
+    cleaned_bedrooms * out_door_dining_fac +
+    bathrooms * out_door_dining_fac +
+    log(dist_to_dt) * out_door_dining_fac +
+    clean_host_acceptance_rate * out_door_dining_fac,
+  data = filter_airbnb_cooks_3, # Ensure that the data is correctly pre-processed
+  method = "lm", # Specifying a linear model
+  trControl = train_control
+)
+
+# Printing model metrics
+print(mod_full)
+
+# Getting a more detailed output of the model
+summary(mod_full)
+
+```
+
+We can also use cross validation to perform variable selection. This can help to determine which combination of features leads to the best predictions. The freControl function establishes that we will use linear regression and cross validation. The rfe function performs the variable selection procedure. Using cross validation, we will assess the out-of-sample RMSE for a 1-variable model, 2-variable model, etc, and select the optimal predictors based on the lowest RMSE.
+
+Use the transformation regression for the final variable selection
+
+This is using RMSE to select the best model, instead of using the p value. It is a better approach than simply looking at p value and making selection decisions.
+
+# Main regression 10 (less interaction terms)
+
+Now we want to see a model with certain selected interaction terms to be dropped. Given that the distance to downtown is the only real continuous variable in this scenario, introducing interaction terms for the number of bedrooms, number of bathrooms, and host acceptance rate may not be meaningful. Therefore, it seems more reasonable to only include interaction terms for the distance to downtown with room type and outdoor dining options.
+
+```{r}
+main_regression_new <- lm(cleaned_price~ cleaned_bedrooms + bathrooms + dist_to_dt*room_type_clean_fac + dist_to_dt*out_door_dining_fac + clean_host_acceptance_rate, 
+                      data = airbnb)
+
+# Print the summary of the regression
+summary(main_regression_new)
+
+#plot 
+plot(main_regression_new)
+```
+
+After vriable transformation log(y) and log(x)
+
+```{r}
+main_regression_10 <- lm(log(cleaned_price)~ cleaned_bedrooms + bathrooms + log(dist_to_dt)*room_type_clean_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate, 
+                      data = airbnb)
+
+# Print the summary of the regression
+summary(main_regression_10)
+
+#plot 
+plot(main_regression_10)
+```
+
+## Drop influential
+
+Drop the influential point on cook's distance 927
+
+```{r}
+filter_airbnb2_cooks <- airbnb %>%
+  filter(!(row.names(airbnb) %in% c(927)))
+```
+
+check the plot after dropping the influential point
+
+```{r}
+main_regression_11 <- lm(log(cleaned_price)~ cleaned_bedrooms + bathrooms + log(dist_to_dt)*room_type_clean_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate, 
+                      data = filter_airbnb2_cooks)
+
+# Print the summary of the regression
+summary(main_regression_11)
+
+#plot 
+plot(main_regression_11)
+```
+
+## Drop high leverage
+
+Now drop the point with high leverage 924
+
+```{r}
+filter_airbnb3_cooks <- filter_airbnb2_cooks %>%
+  filter(!(row.names(filter_airbnb2_cooks) %in% c(924)))
+```
+
+Observe the graph, point 924 is indeed influential because the p value of room_type_clean_facNon Entire home/apt becomes more significant.
+
+```{r}
+main_regression_12 <- lm(log(cleaned_price)~ cleaned_bedrooms + bathrooms + log(dist_to_dt)*room_type_clean_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate, 
+                      data = filter_airbnb3_cooks)
+
+# Print the summary of the regression
+summary(main_regression_12)
+
+#plot 
+plot(main_regression_12)
+```
+
+Drop 168 which have high leverage
+
+```{r}
+filter_airbnb4_cooks <- filter_airbnb3_cooks %>%
+  filter(!(row.names(filter_airbnb3_cooks) %in% c(168)))
+```
+
+I think point 168 is not that influential since it didn't change the significance level. I will not drop it and just stop here.
+
+```{r}
+main_regression_13 <- lm(log(cleaned_price)~ cleaned_bedrooms + bathrooms + log(dist_to_dt)*room_type_clean_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate, 
+                      data = filter_airbnb4_cooks)
+
+# Print the summary of the regression
+summary(main_regression_13)
+
+#plot 
+plot(main_regression_13)
+```
+
+I will use my regression model main_regression_12 to compare with my regression model main_regression_8
+
+# Main regression 12 (transfrom y, transform dis_to_dt + add interaction terms for dis_to_dt+ drop influential points)
+
+```{r}
+main_regression_12 <- lm(log(cleaned_price)~ cleaned_bedrooms + bathrooms + log(dist_to_dt)*room_type_clean_fac + log(dist_to_dt)*out_door_dining_fac + clean_host_acceptance_rate, 
+                      data = filter_airbnb3_cooks)
+
+# Print the summary of the regression
+summary(main_regression_12)
+
+#plot 
+plot(main_regression_12)
+```
+
+# Cross validation (main regression 12)
+
+Run the cross validation for main_regression_12
+
+-   RMSE 0.3954771. Lower RMSE values indicate better model fit, where predictions are closer to the actual values.
+
+-   R² of approximately 0.527268 means that about 52.5% of the variance in the target variable is explained by the predictors.
+
+-   MAE 0.3075177. Lower MAE values indicate better model accuracy in terms of absolute error.
+
+```{r}
+# Set a seed for reproducibility of results
+set.seed(921)
+
+# Setting up the 10-fold cross-validation
+train_control <- trainControl(
+  method = "cv",  # Cross-validation
+  number = 10     # Number of folds
+)
+
+# Building a linear model with interaction terms
+mod_full2 <- train(
+  log(cleaned_price) ~ 
+    cleaned_bedrooms + 
+    bathrooms + 
+    log(dist_to_dt) * room_type_clean_fac + 
+    log(dist_to_dt) * out_door_dining_fac + 
+    clean_host_acceptance_rate, 
+  data = filter_airbnb3_cooks,  # Use the pre-processed data
+  method = "lm",                # Linear model
+  trControl = train_control     # Defined training control
+)
+
+# Print a summary of the model
+print(mod_full2)
+
+# For a more detailed summary of the model
+summary(mod_full2)
+
+```
+
+# Compare model 12 and model 8 (model 12 wins)
+
+Comparing the RMSE between main_regression_8 and main_regression_12, we can see that main_regression_8 has a lightly lower RMSE but almost negligible. Since the RMSE difference between these 2 models are almost negligible, we should choose main_regression_12, which is a simpler model, over main_regression_8
+
+Do the prediction using main_regression_12
+
+# Prediction Model 12
+
+```{r}
+# Assume new_data is a dataframe with the same structure as the input data for main_regression_12
+new_data <- data.frame(
+  cleaned_bedrooms = c(2, 3),
+  bathrooms = c(1, 2),
+  dist_to_dt = c(1.5, 2.0), 
+  room_type_clean_fac = c("Entire home/apt", "Non Entire home/apt"), 
+  out_door_dining_fac = c("have outdoor dining", "don't have outdoor dining"), 
+  clean_host_acceptance_rate = c(98, 100)
+)
+
+summary(new_data)
+glimpse(new_data)
+
+# Use the predict() function to get predictions for new_data from main_regression_12
+predicted_log_prices <- predict(main_regression_12, newdata = new_data)
+
+predicted_prices <- exp(predicted_log_prices)
+
+# Print the predicted prices
+print(predicted_prices)
+
+```
